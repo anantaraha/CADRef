@@ -1,0 +1,13 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# CADRef cache files
+/cache
+/data/*
+!/data/README.md
+/result
+
+# Notebooks for testing purposes
+/*.ipynb
