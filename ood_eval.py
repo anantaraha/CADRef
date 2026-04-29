@@ -28,6 +28,11 @@ def get_eval_options():
     parser.add_argument("--result_dir", type=str, default="result",help="result directory")
     parser.add_argument("--num_workers", type=int, default=24,help="number of workers")
     parser.add_argument("--logit_method", type=str, default="Energy",choices=["Energy","MSP","MaxLogit","GEN"],help="logit method for CADRef")
+    parser.add_argument("--use_noisy_data", action="store_true")
+    parser.add_argument("--noise_ratio", type=float, default=0.4)
+    parser.add_argument("--noise_type", type=str, default="symmetric", choices=["symmetric", "asymmetric"])
+    parser.add_argument("--noise_seed", type=int, default=42)
+
     args = parser.parse_args()
     return args
 

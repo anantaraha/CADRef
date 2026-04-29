@@ -1,6 +1,60 @@
 from torchvision import datasets, transforms
+import numpy as np
+import torch
+from torch.utils.data import Dataset
 # import os
 import torch.utils.data
+
+class NoisyLabelDataset(Dataset):
+    """
+    Wraps a torchvision classification dataset and returns fixed noisy labels.
+    Original images/transforms remain unchanged.
+    """
+
+    def __init__(self, base_dataset, num_classes, noise_ratio=0.4,
+                 noise_type="symmetric", seed=42):
+        self.base_dataset = base_dataset
+        self.num_classes = num_classes
+        self.noise_ratio = noise_ratio
+        self.noise_type = noise_type
+        self.seed = seed
+
+        # torchvision CIFAR stores labels in .targets
+        self.clean_targets = np.array(base_dataset.targets)
+        self.noisy_targets = self.clean_targets.copy()
+
+        rng = np.random.default_rng(seed)
+        n = len(self.clean_targets)
+        noisy_indices = rng.choice(n, size=int(noise_ratio * n), replace=False)
+
+        if noise_type == "symmetric":
+            for idx in noisy_indices:
+                old_label = self.clean_targets[idx]
+                candidates = list(range(num_classes))
+                candidates.remove(old_label)
+                self.noisy_targets[idx] = rng.choice(candidates)
+
+        elif noise_type == "asymmetric":
+            # Simple CIFAR-like cyclic asymmetric noise: y -> (y + 1) % C
+            # Later you can replace with standard CIFAR-specific mappings.
+            for idx in noisy_indices:
+                old_label = self.clean_targets[idx]
+                self.noisy_targets[idx] = (old_label + 1) % num_classes
+
+        else:
+            raise ValueError(f"Unknown noise_type: {noise_type}")
+
+        self.noisy_indices = set(noisy_indices.tolist())
+
+    def __getitem__(self, index):
+        img, _ = self.base_dataset[index]
+        label = int(self.noisy_targets[index])
+        return img, label
+
+    def __len__(self):
+        return len(self.base_dataset)
+
+
 def get_dataset(dataset,args):
     train_dataset = None
     test_dataset = None
@@ -27,8 +81,17 @@ def get_dataset(dataset,args):
             transforms.Normalize(transforme_mean, transforme_std)
         ])
         train_dataset = CIFAR10("./data/cifar10", train=True, transform=train_transform, download=True)
+        # adding noise
+        if getattr(args, "use_noisy_data", False):
+            train_dataset = NoisyLabelDataset(
+                train_dataset,
+                num_classes=10,
+                noise_ratio=getattr(args, "noise_ratio", 0.4),
+                noise_type=getattr(args, "noise_type", "symmetric"),
+                seed=getattr(args, "noise_seed", 42)
+            )
         test_dataset = CIFAR10("./data/cifar10", train=False, transform=test_transform, download=True)
-
+    
     elif dataset == "cifar100":
         from torchvision.datasets import CIFAR100
         train_transform = transforms.Compose([
@@ -42,7 +105,17 @@ def get_dataset(dataset,args):
             transforms.Normalize(transforme_mean, transforme_std)
         ])
         train_dataset = CIFAR100("./data/cifar100", train=True, transform=train_transform, download=True)
+        # adding noise
+        if getattr(args, "use_noisy_data", False):
+            train_dataset = NoisyLabelDataset(
+                train_dataset,
+                num_classes=100,
+                noise_ratio=getattr(args, "noise_ratio", 0.4),
+                noise_type=getattr(args, "noise_type", "symmetric"),
+                seed=getattr(args, "noise_seed", 42)
+            )
         test_dataset = CIFAR100("./data/cifar100", train=False, transform=test_transform, download=True)
+    
     
     # large-scale dataset
     elif dataset == "ImageNet":
