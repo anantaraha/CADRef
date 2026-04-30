@@ -107,10 +107,12 @@ class Rel:
                 print(f"ratio U/base: mean={(pred_uncert / pred_base.clamp_min(EPS)).mean().item():.6f}")
                 printed_eval_stats = True
 
-            # r_i = exp(-d_i,y) / sum_k exp(-d_i,k)
-            rel_all = F.softmax(-d_na, dim=1)                    # [B, C]
-            rel_score = rel_all[torch.arange(feat.size(0), device=self.device), assigned]
+            # Direct predicted-class noise-aware distance
+            pred_d_na = d_na[torch.arange(feat.size(0), device=self.device), assigned]
 
-            result.append(rel_score.cpu().numpy())
+            # higher score = more ID-like
+            score = -pred_d_na
+
+            result.append(score.cpu().numpy())
 
         return np.concatenate(result)
