@@ -150,7 +150,7 @@ def main():
         if args.use_noisy_data:
             noise_tag = f"{args.noise_type}_noise{int(args.noise_ratio * 100)}"
 
-        args.save_name = f"{args.ind_dataset}_{args.model}_{noise_tag}.pth"
+        args.save_name = f"{args.ind_dataset}_{args.model}_{noise_tag}.pth.tar"
 
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     save_path = os.path.join(args.checkpoint_dir, args.save_name)
