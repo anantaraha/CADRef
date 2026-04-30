@@ -6,7 +6,7 @@ from tqdm import tqdm
 EPS = 1e-12
 PRINT_STATE_STATS = True
 
-BETA_B = 0.5
+BETA_B = 1.0
 USE_DISTANCE_WEIGHT = True
 USE_ENTROPY_WEIGHT = False
 
