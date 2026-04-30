@@ -12,6 +12,7 @@ from utils.metrics import cal_metric
 from torch.utils.data import DataLoader
 from utils.get_stat import get_features
 from ood_methods.Rel import Rel
+from ood_methods.RWCARef import RWCARef
 def get_eval_options():
     parser = argparse.ArgumentParser()
 
@@ -22,7 +23,7 @@ def get_eval_options():
     parser.add_argument('--num_classes', type=int, default=1000,help="number of classes")
     parser.add_argument("--random_seed", type=int, default=0,help="random seed")
     parser.add_argument("--bs", type=int, default=32,help="batch size")
-    parser.add_argument("--OOD_method", type=str, default="CADRef",help="OOD method name",choices=["MSP","ODIN","Energy","GEN","ReAct","DICE","GradNorm","MaxLogit","ASH","OptFS","VIM","Residual","CARef","CADRef", "Rel"])
+    parser.add_argument("--OOD_method", type=str, default="CADRef",help="OOD method name",choices=["MSP","ODIN","Energy","GEN","ReAct","DICE","GradNorm","MaxLogit","ASH","OptFS","VIM","Residual","CARef","CADRef", "Rel", "RWCARef"])
     parser.add_argument("--use_feature_cache", type=bool, default=True, help="use feature cache")
     parser.add_argument("--use_score_cache", type=bool, default=True, help="use score cache")
     parser.add_argument("--cache_dir", type=str, default="cache",help="cache directory")
@@ -251,12 +252,43 @@ if __name__ == '__main__':
                 pickle.dump((prototypes, class_var, class_uncert), f)
 
         evaluator.set_state(prototypes, class_var, class_uncert)
+    
+    elif args.OOD_method == "RWCARef":
+        evaluator = RWCARef(model, args, device)
+
+        rwcaref_file_path = os.path.join(
+            args.cache_dir, args.model, args.ind_dataset,
+            "RWCARef_state.pkl"
+        )
+
+        if os.path.exists(rwcaref_file_path) and args.use_feature_cache:
+            with open(rwcaref_file_path, "rb") as f:
+                weighted_mean, class_var, class_uncert, class_uncert_norm = pickle.load(f)
+        else:
+            train_data, _ = get_dataset(args.ind_dataset, args)
+            train_loader = DataLoader(
+                dataset=train_data,
+                batch_size=args.bs,
+                pin_memory=True,
+                num_workers=args.num_workers,
+                shuffle=False,
+            )
+
+            features, logits = get_features(model, train_loader, args, device)
+            weighted_mean, class_var, class_uncert, class_uncert_norm = evaluator.get_state(features, logits)
+
+            with open(rwcaref_file_path, "wb") as f:
+                pickle.dump((weighted_mean, class_var, class_uncert, class_uncert_norm), f)
+
+        evaluator.set_state(weighted_mean, class_var, class_uncert, class_uncert_norm)
 
     ind_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, args.OOD_method+"_ind_scores.pkl")
     if args.OOD_method == "CADRef":
         ind_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, args.OOD_method+"_"+args.logit_method+"_ind_scores.pkl")
     elif args.OOD_method == "Rel":
         ind_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, "Rel_ind_scores.pkl")
+    elif args.OOD_method == "RWCARef":
+        ind_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, "RWCARef_ind_scores.pkl")
     if os.path.exists(ind_score_cache_path) and args.use_score_cache:
         with open(ind_score_cache_path, "rb") as f:
             ind_scores = pickle.load(f)
@@ -273,6 +305,8 @@ if __name__ == '__main__':
             ood_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, args.OOD_method+"_"+args.logit_method+"_"+ood_dataset+"_scores.pkl")
         elif args.OOD_method == "Rel":
             ood_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, "Rel_" + ood_dataset + "_scores.pkl")
+        elif args.OOD_method == "RWCARef":
+            ood_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, "RWCARef_" + ood_dataset + "_scores.pkl")
         if os.path.exists(ood_score_cache_path) and args.use_score_cache:
             with open(ood_score_cache_path, "rb") as f:
                 ood_scores = pickle.load(f)
