@@ -70,11 +70,20 @@ def get_dataset(dataset,args):
     # small-scale dataset
     if dataset == "cifar10":
         from torchvision.datasets import CIFAR10
-        train_transform = transforms.Compose([
-            transforms.Resize([size,size]), 
-            transforms.ToTensor(),
-            transforms.Normalize(transforme_mean, transforme_std)
-        ])
+        if getattr(args, "use_augmentation", False):
+            train_transform = transforms.Compose([
+                transforms.Resize([size, size]),
+                transforms.RandomCrop(size, padding=4),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.ToTensor(),
+                transforms.Normalize(transforme_mean, transforme_std)
+            ])
+        else:
+            train_transform = transforms.Compose([
+                transforms.Resize([size, size]),
+                transforms.ToTensor(),
+                transforms.Normalize(transforme_mean, transforme_std)
+            ])
         test_transform = transforms.Compose([
             transforms.Resize([size,size]), 
             transforms.ToTensor(),
@@ -94,11 +103,20 @@ def get_dataset(dataset,args):
     
     elif dataset == "cifar100":
         from torchvision.datasets import CIFAR100
-        train_transform = transforms.Compose([
-            transforms.Resize([size,size]), 
-            transforms.ToTensor(),
-            transforms.Normalize(transforme_mean, transforme_std)
-        ])
+        if getattr(args, "use_augmentation", False):
+            train_transform = transforms.Compose([
+                transforms.Resize([size, size]),
+                transforms.RandomCrop(size, padding=4),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.ToTensor(),
+                transforms.Normalize(transforme_mean, transforme_std)
+            ])
+        else:
+            train_transform = transforms.Compose([
+                transforms.Resize([size, size]),
+                transforms.ToTensor(),
+                transforms.Normalize(transforme_mean, transforme_std)
+            ])
         test_transform = transforms.Compose([
             transforms.Resize([size,size]), 
             transforms.ToTensor(),

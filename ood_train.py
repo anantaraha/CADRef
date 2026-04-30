@@ -37,6 +37,7 @@ def get_train_options():
     parser.add_argument("--lr", type=float, default=0.1)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
+    parser.add_argument("--use_augmentation", action="store_true")
 
     # noisy data args, handled inside utils.dataset.get_dataset()
     parser.add_argument("--use_noisy_data", action="store_true")
@@ -193,7 +194,7 @@ def main():
 
         if test_acc > best_acc:
             best_acc = test_acc
-            torch.save(model.state_dict(), save_path)
+            torch.save({"state_dict": model.state_dict()}, save_path)
 
     print(f"Best test acc: {best_acc:.2f}")
     print(f"Saved checkpoint: {save_path}")
