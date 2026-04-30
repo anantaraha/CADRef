@@ -6,9 +6,9 @@ from tqdm import tqdm
 EPS = 1e-12
 PRINT_STATE_STATS = True
 
-# Optional scaling. Keep 1.0 first.
-BETA_B = 1.0
-BETA_U = 1.0
+BETA_B = 0.5
+USE_DISTANCE_WEIGHT = True
+USE_ENTROPY_WEIGHT = False
 
 
 class RWCARef:
@@ -76,7 +76,6 @@ class RWCARef:
 
         all_B = []
         all_R = []
-        all_U_norm_used = []
 
         for c in range(len(features)):
             feat_c = features[c]   # [Nc, D]
@@ -86,9 +85,10 @@ class RWCARef:
             diff = feat_c - mu_c.unsqueeze(0)
             B_i = diff.pow(2).sum(dim=1) / class_var[c].clamp_min(EPS)  # [Nc]
 
-            # R_i = exp(-B_i) * exp(-U_c_norm)
-            U_c_norm = class_uncert_norm[c]
-            R_i = torch.exp(-BETA_B * B_i) * torch.exp(-BETA_U * U_c_norm)
+            # Distance-only reliability:
+            # R_i = exp(-beta_B * max(0, B_i - 1))
+            B_excess = torch.clamp(B_i - 1.0, min=0.0)
+            R_i = torch.exp(-BETA_B * B_excess)
 
             weighted_mu_c = (R_i.unsqueeze(1) * feat_c).sum(dim=0) / R_i.sum().clamp_min(EPS)
 
@@ -96,23 +96,23 @@ class RWCARef:
 
             all_B.append(B_i)
             all_R.append(R_i)
-            all_U_norm_used.append(torch.full_like(B_i, U_c_norm))
 
         weighted_mean = torch.stack(weighted_mean_list)  # [C, D]
 
         if PRINT_STATE_STATS:
             all_B = torch.cat(all_B)
             all_R = torch.cat(all_R)
-            all_U_norm_used = torch.cat(all_U_norm_used)
 
             print("\n[RWCARef state statistics]")
             print(f"class_var:        mean={class_var.mean().item():.6f}, min={class_var.min().item():.6f}, max={class_var.max().item():.6f}")
             print(f"class_uncert U:   mean={class_uncert.mean().item():.6f}, min={class_uncert.min().item():.6f}, max={class_uncert.max().item():.6f}")
             print(f"U_norm:           mean={class_uncert_norm.mean().item():.6f}, min={class_uncert_norm.min().item():.6f}, max={class_uncert_norm.max().item():.6f}")
             print(f"B_i:              mean={all_B.mean().item():.6f}, min={all_B.min().item():.6f}, max={all_B.max().item():.6f}")
-            print(f"used U_norm:      mean={all_U_norm_used.mean().item():.6f}, min={all_U_norm_used.min().item():.6f}, max={all_U_norm_used.max().item():.6f}")
             print(f"R_i:              mean={all_R.mean().item():.6f}, min={all_R.min().item():.6f}, max={all_R.max().item():.6f}")
-            print(f"BETA_B={BETA_B}, BETA_U={BETA_U}")
+            print(f"BETA_B={BETA_B}, USE_DISTANCE_WEIGHT={USE_DISTANCE_WEIGHT}, USE_ENTROPY_WEIGHT={USE_ENTROPY_WEIGHT}")
+
+            all_B_excess = torch.clamp(all_B - 1.0, min=0.0)
+            print(f"B_excess:         mean={all_B_excess.mean().item():.6f}, min={all_B_excess.min().item():.6f}, max={all_B_excess.max().item():.6f}")
 
         return weighted_mean, class_var, class_uncert, class_uncert_norm
 
