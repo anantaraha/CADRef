@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 EPS = 1e-12
-LAMBDA_UNCERT = 1.0
+LAMBDA_UNCERT = 10.0
 PRINT_STATE_STATS = True
 
 
