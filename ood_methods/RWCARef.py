@@ -6,9 +6,9 @@ from tqdm import tqdm
 EPS = 1e-12
 PRINT_STATE_STATS = True
 
-BETA_B = 1.0
-USE_DISTANCE_WEIGHT = True
-USE_ENTROPY_WEIGHT = False
+BETA_H = 1.0
+USE_DISTANCE_WEIGHT = False
+USE_ENTROPY_WEIGHT = True
 
 
 class RWCARef:
@@ -71,9 +71,21 @@ class RWCARef:
         u_max = class_uncert.max()
         class_uncert_norm = (class_uncert - u_min) / (u_max - u_min + EPS)
 
+        # ---------- Normalize sample-level entropy across all training samples ----------
+        all_entropy = []
+        for c in range(len(logits)):
+            logit_c = logits[c]
+            if logit_c.numel() > 0:
+                all_entropy.append(self._entropy(logit_c))
+
+        all_entropy = torch.cat(all_entropy)
+        h_min = all_entropy.min()
+        h_max = all_entropy.max()
+
         # ---------- Second pass: reliability-weighted prototypes ----------
         weighted_mean_list = []
 
+        all_H_norm = []
         all_B = []
         all_R = []
 
@@ -85,10 +97,12 @@ class RWCARef:
             diff = feat_c - mu_c.unsqueeze(0)
             B_i = diff.pow(2).sum(dim=1) / class_var[c].clamp_min(EPS)  # [Nc]
 
-            # Distance-only reliability:
-            # R_i = exp(-beta_B * max(0, B_i - 1))
-            B_excess = torch.clamp(B_i - 1.0, min=0.0)
-            R_i = torch.exp(-BETA_B * B_excess)
+            # Sample-entropy-only reliability:
+            # R_i = exp(-beta_H * H_norm_i)
+            H_i = self._entropy(logits[c])  # [Nc]
+            H_norm_i = (H_i - h_min) / (h_max - h_min + EPS)
+
+            R_i = torch.exp(-BETA_H * H_norm_i)
 
             weighted_mu_c = (R_i.unsqueeze(1) * feat_c).sum(dim=0) / R_i.sum().clamp_min(EPS)
 
@@ -96,6 +110,7 @@ class RWCARef:
 
             all_B.append(B_i)
             all_R.append(R_i)
+            all_H_norm.append(H_norm_i)
 
         weighted_mean = torch.stack(weighted_mean_list)  # [C, D]
 
@@ -108,8 +123,11 @@ class RWCARef:
             print(f"class_uncert U:   mean={class_uncert.mean().item():.6f}, min={class_uncert.min().item():.6f}, max={class_uncert.max().item():.6f}")
             print(f"U_norm:           mean={class_uncert_norm.mean().item():.6f}, min={class_uncert_norm.min().item():.6f}, max={class_uncert_norm.max().item():.6f}")
             print(f"B_i:              mean={all_B.mean().item():.6f}, min={all_B.min().item():.6f}, max={all_B.max().item():.6f}")
+            
+            all_H_norm = torch.cat(all_H_norm)
+            print(f"H_norm_i:         mean={all_H_norm.mean().item():.6f}, min={all_H_norm.min().item():.6f}, max={all_H_norm.max().item():.6f}")
             print(f"R_i:              mean={all_R.mean().item():.6f}, min={all_R.min().item():.6f}, max={all_R.max().item():.6f}")
-            print(f"BETA_B={BETA_B}, USE_DISTANCE_WEIGHT={USE_DISTANCE_WEIGHT}, USE_ENTROPY_WEIGHT={USE_ENTROPY_WEIGHT}")
+            print(f"BETA_H={BETA_H}, USE_DISTANCE_WEIGHT={USE_DISTANCE_WEIGHT}, USE_ENTROPY_WEIGHT={USE_ENTROPY_WEIGHT}")
 
             all_B_excess = torch.clamp(all_B - 1.0, min=0.0)
             print(f"B_excess:         mean={all_B_excess.mean().item():.6f}, min={all_B_excess.min().item():.6f}, max={all_B_excess.max().item():.6f}")
