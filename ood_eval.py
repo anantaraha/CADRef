@@ -11,7 +11,6 @@ from utils.models import get_model
 from utils.metrics import cal_metric
 from torch.utils.data import DataLoader
 from utils.get_stat import get_features
-from ood_methods.Rel import Rel
 from ood_methods.RWCARef import RWCARef
 def get_eval_options():
     parser = argparse.ArgumentParser()
@@ -23,17 +22,24 @@ def get_eval_options():
     parser.add_argument('--num_classes', type=int, default=1000,help="number of classes")
     parser.add_argument("--random_seed", type=int, default=0,help="random seed")
     parser.add_argument("--bs", type=int, default=32,help="batch size")
-    parser.add_argument("--OOD_method", type=str, default="CADRef",help="OOD method name",choices=["MSP","ODIN","Energy","GEN","ReAct","DICE","GradNorm","MaxLogit","ASH","OptFS","VIM","Residual","CARef","CADRef", "Rel", "RWCARef"])
+    parser.add_argument("--OOD_method", type=str, default="CADRef",help="OOD method name",choices=["MSP","ODIN","Energy","GEN","ReAct","DICE","GradNorm","MaxLogit","ASH","OptFS","VIM","Residual","CARef","CADRef", "RWCARef"])
     parser.add_argument("--use_feature_cache", type=bool, default=True, help="use feature cache")
     parser.add_argument("--use_score_cache", type=bool, default=True, help="use score cache")
     parser.add_argument("--cache_dir", type=str, default="cache",help="cache directory")
     parser.add_argument("--result_dir", type=str, default="result",help="result directory")
     parser.add_argument("--num_workers", type=int, default=24,help="number of workers")
     parser.add_argument("--logit_method", type=str, default="Energy",choices=["Energy","MSP","MaxLogit","GEN"],help="logit method for CADRef")
+    
     parser.add_argument("--use_noisy_data", action="store_true")
     parser.add_argument("--noise_ratio", type=float, default=0.4)
     parser.add_argument("--noise_type", type=str, default="symmetric", choices=["symmetric", "asymmetric"])
     parser.add_argument("--noise_seed", type=int, default=42)
+    
+    parser.add_argument("--rw_beta_b", type=float, default=0.5)
+    parser.add_argument("--rw_beta_h", type=float, default=1.0)
+    parser.add_argument("--rw_use_distance", action="store_true")
+    parser.add_argument("--rw_use_entropy", action="store_true")
+    parser.add_argument("--rw_print_stats", action="store_true")
 
     args = parser.parse_args()
     return args
@@ -224,46 +230,22 @@ if __name__ == '__main__':
         
         evaluator.set_state(train_mean, global_mean_logit_score)
     
-    elif args.OOD_method == "Rel":
-        evaluator = Rel(model, args, device)
-
-        rel_file_path = os.path.join(
-            args.cache_dir, args.model, args.ind_dataset,
-            "Rel_state.pkl"
-        )
-
-        if os.path.exists(rel_file_path) and args.use_feature_cache:
-            with open(rel_file_path, "rb") as f:
-                prototypes, class_var, class_uncert = pickle.load(f)
-        else:
-            train_data, _ = get_dataset(args.ind_dataset, args)
-            train_loader = DataLoader(
-                dataset=train_data,
-                batch_size=args.bs,
-                pin_memory=True,
-                num_workers=args.num_workers,
-                shuffle=False,
-            )
-
-            features, logits = get_features(model, train_loader, args, device)
-            prototypes, class_var, class_uncert = evaluator.get_state(features, logits)
-
-            with open(rel_file_path, "wb") as f:
-                pickle.dump((prototypes, class_var, class_uncert), f)
-
-        evaluator.set_state(prototypes, class_var, class_uncert)
-    
     elif args.OOD_method == "RWCARef":
         evaluator = RWCARef(model, args, device)
 
+        rw_tag = (
+            f"RWCARef_B{args.rw_beta_b}_H{args.rw_beta_h}_"
+            f"D{int(args.rw_use_distance)}_E{int(args.rw_use_entropy)}"
+        )
+
         rwcaref_file_path = os.path.join(
             args.cache_dir, args.model, args.ind_dataset,
-            "RWCARef_state.pkl"
+            rw_tag + "_state.pkl"
         )
 
         if os.path.exists(rwcaref_file_path) and args.use_feature_cache:
             with open(rwcaref_file_path, "rb") as f:
-                weighted_mean, class_var, class_uncert, class_uncert_norm = pickle.load(f)
+                weighted_mean = pickle.load(f)
         else:
             train_data, _ = get_dataset(args.ind_dataset, args)
             train_loader = DataLoader(
@@ -275,20 +257,18 @@ if __name__ == '__main__':
             )
 
             features, logits = get_features(model, train_loader, args, device)
-            weighted_mean, class_var, class_uncert, class_uncert_norm = evaluator.get_state(features, logits)
+            weighted_mean = evaluator.get_state(features, logits)
 
             with open(rwcaref_file_path, "wb") as f:
-                pickle.dump((weighted_mean, class_var, class_uncert, class_uncert_norm), f)
+                pickle.dump(weighted_mean, f)
 
-        evaluator.set_state(weighted_mean, class_var, class_uncert, class_uncert_norm)
+        evaluator.set_state(weighted_mean)
 
     ind_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, args.OOD_method+"_ind_scores.pkl")
     if args.OOD_method == "CADRef":
         ind_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, args.OOD_method+"_"+args.logit_method+"_ind_scores.pkl")
-    elif args.OOD_method == "Rel":
-        ind_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, "Rel_ind_scores.pkl")
     elif args.OOD_method == "RWCARef":
-        ind_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, "RWCARef_ind_scores.pkl")
+        ind_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, f"RWCARef_B{args.rw_beta_b}_H{args.rw_beta_h}_D{int(args.rw_use_distance)}_E{int(args.rw_use_entropy)}_ind_scores.pkl")
     if os.path.exists(ind_score_cache_path) and args.use_score_cache:
         with open(ind_score_cache_path, "rb") as f:
             ind_scores = pickle.load(f)
@@ -303,10 +283,8 @@ if __name__ == '__main__':
         ood_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, args.OOD_method+"_"+ood_dataset+"_scores.pkl")
         if args.OOD_method == "CADRef":
             ood_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, args.OOD_method+"_"+args.logit_method+"_"+ood_dataset+"_scores.pkl")
-        elif args.OOD_method == "Rel":
-            ood_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, "Rel_" + ood_dataset + "_scores.pkl")
         elif args.OOD_method == "RWCARef":
-            ood_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, "RWCARef_" + ood_dataset + "_scores.pkl")
+            ood_score_cache_path = os.path.join(args.cache_dir, args.model, args.ind_dataset, f"RWCARef_B{args.rw_beta_b}_H{args.rw_beta_h}_D{int(args.rw_use_distance)}_E{int(args.rw_use_entropy)}_{ood_dataset}_scores.pkl")
         if os.path.exists(ood_score_cache_path) and args.use_score_cache:
             with open(ood_score_cache_path, "rb") as f:
                 ood_scores = pickle.load(f)

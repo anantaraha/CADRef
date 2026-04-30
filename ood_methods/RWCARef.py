@@ -4,12 +4,6 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 EPS = 1e-12
-PRINT_STATE_STATS = True
-
-BETA_B = 0.25
-BETA_H = 1.0
-USE_DISTANCE_WEIGHT = True
-USE_ENTROPY_WEIGHT = True
 
 
 class RWCARef:
@@ -18,16 +12,16 @@ class RWCARef:
         self.args = args
         self.device = device
 
-        self.weighted_mean = None
-        self.class_var = None
-        self.class_uncert = None
-        self.class_uncert_norm = None
+        self.beta_b = args.rw_beta_b
+        self.beta_h = args.rw_beta_h
+        self.use_distance_weight = args.rw_use_distance
+        self.use_entropy_weight = args.rw_use_entropy
+        self.print_stats = args.rw_print_stats
 
-    def set_state(self, weighted_mean, class_var, class_uncert, class_uncert_norm):
+        self.weighted_mean = None
+
+    def set_state(self, weighted_mean):
         self.weighted_mean = weighted_mean
-        self.class_var = class_var
-        self.class_uncert = class_uncert
-        self.class_uncert_norm = class_uncert_norm
 
     def _entropy(self, logits):
         p = F.softmax(logits, dim=1)
@@ -38,16 +32,19 @@ class RWCARef:
         """
         features[c]: [Nc, D], grouped by predicted class
         logits[c]:   [Nc, C], grouped by predicted class
+
+        Builds reliability-weighted class references.
         """
 
-        # ---------- First pass: ordinary prototypes, spread, uncertainty ----------
+        num_classes = len(features)
+        log_k = torch.log(torch.tensor(float(num_classes))).clamp_min(EPS)
+
+        # ---------- First pass: ordinary class means and spreads ----------
         mean_list = []
         var_list = []
-        uncert_list = []
 
-        for c in range(len(features)):
-            feat_c = features[c]   # [Nc, D]
-            logit_c = logits[c]    # [Nc, C]
+        for c in range(num_classes):
+            feat_c = features[c]
 
             if feat_c.numel() == 0:
                 raise ValueError(f"Empty feature group for class {c}")
@@ -57,96 +54,92 @@ class RWCARef:
             diff = feat_c - mu_c.unsqueeze(0)
             sigma2_c = diff.pow(2).sum(dim=1).mean().clamp_min(EPS)
 
-            uncert_c = self._entropy(logit_c).mean()
-
             mean_list.append(mu_c)
             var_list.append(sigma2_c)
-            uncert_list.append(uncert_c)
 
-        mean = torch.stack(mean_list)               # [C, D]
-        class_var = torch.stack(var_list)           # [C]
-        class_uncert = torch.stack(uncert_list)     # [C]
+        class_mean = torch.stack(mean_list)   # [C, D]
+        class_var = torch.stack(var_list)     # [C]
 
-        # normalized U_c
-        u_min = class_uncert.min()
-        u_max = class_uncert.max()
-        class_uncert_norm = (class_uncert - u_min) / (u_max - u_min + EPS)
-
-        # ---------- Normalize sample-level entropy across all training samples ----------
-        all_entropy = []
-        for c in range(len(logits)):
-            logit_c = logits[c]
-            if logit_c.numel() > 0:
-                all_entropy.append(self._entropy(logit_c))
-
-        all_entropy = torch.cat(all_entropy)
-        h_min = all_entropy.min()
-        h_max = all_entropy.max()
-
-        # ---------- Second pass: reliability-weighted prototypes ----------
+        # ---------- Second pass: sample reliability and weighted references ----------
         weighted_mean_list = []
 
-        all_H_norm = []
         all_B = []
-        all_R = []
         all_B_excess = []
+        all_H_norm = []
+        all_R = []
+        all_R_dist = []
+        all_R_ent = []
 
-        for c in range(len(features)):
-            feat_c = features[c]   # [Nc, D]
-            mu_c = mean[c]         # [D]
+        for c in range(num_classes):
+            feat_c = features[c]       # [Nc, D]
+            logit_c = logits[c]        # [Nc, C]
+            mu_c = class_mean[c]       # [D]
 
-            # B_i = ||f_i - mu_c||^2 / sigma_c^2
+            # B_i = ||f_i - mu_c||^2 / (sigma_c^2 + eps)
             diff = feat_c - mu_c.unsqueeze(0)
-            B_i = diff.pow(2).sum(dim=1) / class_var[c].clamp_min(EPS)  # [Nc]
+            B_i = diff.pow(2).sum(dim=1) / class_var[c].clamp_min(EPS)
 
-            # Combined reliability:
-            # R_i = exp(-beta_B * max(0, B_i - 1)) * exp(-beta_H * H_norm_i)
-
+            # B_i^+ = max(0, B_i - 1)
             B_excess = torch.clamp(B_i - 1.0, min=0.0)
 
-            H_i = self._entropy(logits[c])  # [Nc]
-            H_norm_i = (H_i - h_min) / (h_max - h_min + EPS)
+            # H_i_norm = H(p_i) / log(K)
+            H_i = self._entropy(logit_c)
+            H_norm_i = H_i / log_k
 
-            R_dist = torch.exp(-BETA_B * B_excess)
-            R_ent = torch.exp(-BETA_H * H_norm_i)
+            # Optional terms
+            if self.use_distance_weight:
+                R_dist = torch.exp(-self.beta_b * B_excess)
+            else:
+                R_dist = torch.ones_like(B_i)
 
+            if self.use_entropy_weight:
+                R_ent = torch.exp(-self.beta_h * H_norm_i)
+            else:
+                R_ent = torch.ones_like(B_i)
+
+            # R_i = exp(-beta_B B_i^+) * exp(-beta_H H_i_norm)
             R_i = R_dist * R_ent
 
             weighted_mu_c = (R_i.unsqueeze(1) * feat_c).sum(dim=0) / R_i.sum().clamp_min(EPS)
-
             weighted_mean_list.append(weighted_mu_c)
 
             all_B.append(B_i)
-            all_R.append(R_i)
-            all_H_norm.append(H_norm_i)
             all_B_excess.append(B_excess)
+            all_H_norm.append(H_norm_i)
+            all_R.append(R_i)
+            all_R_dist.append(R_dist)
+            all_R_ent.append(R_ent)
 
         weighted_mean = torch.stack(weighted_mean_list)  # [C, D]
 
-        if PRINT_STATE_STATS:
+        if self.print_stats:
             all_B = torch.cat(all_B)
             all_B_excess = torch.cat(all_B_excess)
             all_H_norm = torch.cat(all_H_norm)
             all_R = torch.cat(all_R)
+            all_R_dist = torch.cat(all_R_dist)
+            all_R_ent = torch.cat(all_R_ent)
 
             print("\n[RWCARef state statistics]")
-            print(f"class_var:        mean={class_var.mean().item():.6f}, min={class_var.min().item():.6f}, max={class_var.max().item():.6f}")
-            print(f"class_uncert U:   mean={class_uncert.mean().item():.6f}, min={class_uncert.min().item():.6f}, max={class_uncert.max().item():.6f}")
-            print(f"U_norm:           mean={class_uncert_norm.mean().item():.6f}, min={class_uncert_norm.min().item():.6f}, max={class_uncert_norm.max().item():.6f}")
-            print(f"B_i:              mean={all_B.mean().item():.6f}, min={all_B.min().item():.6f}, max={all_B.max().item():.6f}")
-            print(f"B_excess:         mean={all_B_excess.mean().item():.6f}, min={all_B_excess.min().item():.6f}, max={all_B_excess.max().item():.6f}")
-            print(f"H_norm_i:         mean={all_H_norm.mean().item():.6f}, min={all_H_norm.min().item():.6f}, max={all_H_norm.max().item():.6f}")
-            print(f"R_i:              mean={all_R.mean().item():.6f}, min={all_R.min().item():.6f}, max={all_R.max().item():.6f}")
-            print(f"BETA_B={BETA_B}, BETA_H={BETA_H}, USE_DISTANCE_WEIGHT={USE_DISTANCE_WEIGHT}, USE_ENTROPY_WEIGHT={USE_ENTROPY_WEIGHT}")
+            print(f"beta_b={self.beta_b}, beta_h={self.beta_h}")
+            print(f"use_distance_weight={self.use_distance_weight}, use_entropy_weight={self.use_entropy_weight}")
 
-        return weighted_mean, class_var, class_uncert, class_uncert_norm
+            print(f"class_var:  mean={class_var.mean().item():.6f}, min={class_var.min().item():.6f}, max={class_var.max().item():.6f}")
+            print(f"B_i:        mean={all_B.mean().item():.6f}, min={all_B.min().item():.6f}, max={all_B.max().item():.6f}")
+            print(f"B_excess:   mean={all_B_excess.mean().item():.6f}, min={all_B_excess.min().item():.6f}, max={all_B_excess.max().item():.6f}")
+            print(f"H_norm_i:   mean={all_H_norm.mean().item():.6f}, min={all_H_norm.min().item():.6f}, max={all_H_norm.max().item():.6f}")
+            print(f"R_dist:     mean={all_R_dist.mean().item():.6f}, min={all_R_dist.min().item():.6f}, max={all_R_dist.max().item():.6f}")
+            print(f"R_ent:      mean={all_R_ent.mean().item():.6f}, min={all_R_ent.min().item():.6f}, max={all_R_ent.max().item():.6f}")
+            print(f"R_i:        mean={all_R.mean().item():.6f}, min={all_R.min().item():.6f}, max={all_R.max().item():.6f}")
+
+        return weighted_mean
 
     @torch.no_grad()
     def eval(self, data_loader):
         self.model.eval()
         result = []
 
-        weighted_mean = self.weighted_mean.to(self.device)  # [C, D]
+        weighted_mean = self.weighted_mean.to(self.device)
 
         printed_eval_stats = False
 
@@ -156,11 +149,11 @@ class RWCARef:
             logits, feat = self.model.get_feature(images)
             class_ids = torch.argmax(logits, dim=1)
 
-            tm = weighted_mean[class_ids]  # [B, D]
+            tm = weighted_mean[class_ids]
 
             error = (feat - tm).abs().sum(dim=1) / feat.abs().sum(dim=1).clamp_min(EPS)
 
-            if PRINT_STATE_STATS and not printed_eval_stats:
+            if self.print_stats and not printed_eval_stats:
                 print("\n[RWCARef eval statistics: first batch]")
                 print(f"CARef error: mean={error.mean().item():.6f}, min={error.min().item():.6f}, max={error.max().item():.6f}")
                 printed_eval_stats = True
