@@ -37,7 +37,7 @@ class RWCARef:
         """
 
         num_classes = len(features)
-        log_k = torch.log(torch.tensor(float(num_classes))).clamp_min(EPS)
+        log_k = torch.log(torch.tensor(float(num_classes), device=features[0].device)).clamp_min(EPS)
 
         # ---------- First pass: ordinary class means and spreads ----------
         mean_list = []
